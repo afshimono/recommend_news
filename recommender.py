@@ -6,8 +6,20 @@ import pandas as pd
 import numpy as np
 from sklearn.metrics import pairwise
 import datetime
+from surprise import SVD
+from surprise import Dataset
+from surprise.model_selection import cross_validate
+from surprise import SVDpp
+from surprise import accuracy
+from surprise.model_selection import train_test_split
+from surprise.model_selection import GridSearchCV
+from surprise import Reader
+from surprise import dump
+import glob
+import os
+import datetime
 
-class NewsRecommender:
+class SimpleNewsRecommender:
 	def __init__(self,trained_model=False):
 		if not trained_model:
 			self.news_df = pd.read_csv('wrangled_data/news_df.csv')
@@ -48,16 +60,100 @@ class NewsRecommender:
 		news_df_csv.to_csv('state/news_state.csv')
 
 	#Returns a list of n recomendations based on the current tags and date
-	def recommend_content(self,n,tags,date):
+	def recomment_content_based(self,n,tags,date):
 		vector = self.__create_vector(tags,self.position_dic)
 		self.news_df['date_object'] = self.news_df['publishedAt'].apply(lambda x: datetime.datetime.strptime(x,'%Y-%m-%dT%H:%M:%S-0300').date())
 		self.news_df['rankings'] = self.news_df[['tag_array','date_object']].apply(lambda x: self.__calculate_content_based_rank(x,vector,date),axis=1)
 		self.news_df = self.news_df.sort_values(by=['rankings'],ascending=False)
-		print(self.news_df[['title','rankings']].head(5))
+		return self.news_df.head(n)
 
-news_rec = NewsRecommender()
-news_rec.train_content_based()
-news_rec.recommend_content(5,'Jair Bolsonaro',datetime.date(2019,4,18))
+
+	#Calculates the ranking of each page for each user.
+	def __generate_ranking(self,x):
+		#Rule applied: no time equals 0, 
+		#less than 2 with time equals 1, 
+		#between 2 and 4 with time equals 2, 
+		#between 4 and 6 with time equals 3, 
+		#larger than 6 with time equals 4
+		if not x[1]:
+			return 0
+		elif x[0] < 2:
+			return 1
+		elif 2 <= x[0] < 4:
+			return 2
+		elif 4 <= x[0] < 6:
+			return 3
+		else: 
+			return 4
+
+	def train_collaborative_filtering(self, grid_search=False, gs_params = None):
+		#transform page list in single value
+		analytics_df_SVD = self.analytics_df.copy()
+		analytics_df_SVD['ranking'] = analytics_df_SVD[['totals.pageviews','totals.timeOnSite']].apply(lambda x:self.__generate_ranking(x),axis=1)
+		analytics_df_SVD = analytics_df_SVD['pages_visited'].apply(lambda x: pd.Series(eval(x)))\
+			.stack()\
+			.reset_index(level=1,drop=True)\
+			.to_frame('pageId')\
+			.join(analytics_df_SVD[['visitId','ranking']], how='left')
+		analytics_df_SVD = analytics_df_SVD.dropna()
+		analytics_df_SVD = analytics_df_SVD[['visitId','ranking','pageId']]
+		analytics_df_SVD['pageId'] = analytics_df_SVD['pageId'].apply(lambda x:int(x))
+
+		# A reader is still needed but only the rating_scale param is requiered.
+		reader = Reader(rating_scale=(1, 4))
+
+		# The columns must correspond to user id, item id and ratings (in that order).
+		data = Dataset.load_from_df(analytics_df_SVD[['visitId', 'pageId', 'ranking']], reader)
+
+		trainset, testset = train_test_split(data, test_size=.1)
+
+		# If user desires to use GridSearch to find best params and algo
+		if grid_search:
+			if(not gs_params):
+				param_grid = {'n_factors': [110, 120, 140, 160], 'n_epochs': [90, 100, 110], 'lr_all': [0.001, 0.003, 0.005, 0.008],\
+		              'reg_all': [0.08, 0.1, 0.15]}
+			else:
+				param_grid=gs_params		    	
+			gs = GridSearchCV(SVD, param_grid, measures=['rmse', 'mae'], cv=3)			
+			gs.fit(data)
+			algo = gs.best_estimator['rmse']
+			print(gs.best_score['rmse'])
+			print(gs.best_params['rmse'])
+
+		## Comment next lines if you are searching the best params
+		# We can now use this dataset as we please, e.g. calling cross_validate
+		else:
+			algo = SVD(n_factors=110, n_epochs=110, lr_all=0.008, reg_all=0.15)
+
+
+		cross_validate(algo, data, measures=['RMSE', 'MAE'], cv=5, verbose=True)
+
+
+		algo.fit(trainset)
+		test_pred = algo.test(testset)
+		print("SVD : Test Set")
+		accuracy.rmse(test_pred, verbose=True)
+
+		# Dump algorithm 
+		print('Saving trained algo...',end =" ")
+		algo_list = glob.glob('state/algo_*')
+		file_name = 'state/algo_'+ datetime.datetime.now().strftime("%Y_%B_%d__%Ih%M%p")
+		dump.dump(file_name, algo=algo)
+		for file in algo_list:
+			os.remove(file)
+		print('Done.')
+
+
+	# This function predicts the best n suggestions to a given user based on the trained 
+	# collaborative filtering recommender
+	def predict_collaborative_filtering(self):
+		pass
+
+
+news_rec = SimpleNewsRecommender()
+#news_rec.train_content_based()
+#news_rec.recomment_content_based(5,'Jair Bolsonaro',datetime.date(2019,4,18))
+news_rec.train_collaborative_filtering()
 
 
 
