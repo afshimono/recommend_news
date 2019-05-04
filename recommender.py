@@ -20,11 +20,20 @@ import os
 import datetime
 
 class SimpleNewsRecommender:
+	#Loads the serialized trained algorithm from disk
+	def __load_algo(self):
+		algo_location = glob.glob('state/algo_*')[0]
+		_, loaded_algo = dump.load(algo_location)
+		return loaded_algo
+
+
 	def __init__(self,trained_model=False):
-		if not trained_model:
+		if trained_model:
 			self.news_df = pd.read_csv('wrangled_data/news_df.csv')
 			self.analytics_df = pd.read_csv('wrangled_data/analytics_df.csv')
 			self.position_dic = {}
+			self.visit_user_ranking = pd.read_csv('state/visit_user_ranking.csv')
+			self.algo = self.__load_algo()
 
 	#Private function to calculate the content based ranking score
 	def __calculate_content_based_rank(self,x,this_vector,this_date):
@@ -60,7 +69,7 @@ class SimpleNewsRecommender:
 		news_df_csv.to_csv('state/news_state.csv')
 
 	#Returns a list of n recomendations based on the current tags and date
-	def recomment_content_based(self,n,tags,date):
+	def recommend_content_based(self,n,tags,date):
 		vector = self.__create_vector(tags,self.position_dic)
 		self.news_df['date_object'] = self.news_df['publishedAt'].apply(lambda x: datetime.datetime.strptime(x,'%Y-%m-%dT%H:%M:%S-0300').date())
 		self.news_df['rankings'] = self.news_df[['tag_array','date_object']].apply(lambda x: self.__calculate_content_based_rank(x,vector,date),axis=1)
@@ -99,11 +108,16 @@ class SimpleNewsRecommender:
 		analytics_df_SVD = analytics_df_SVD[['visitId','ranking','pageId']]
 		analytics_df_SVD['pageId'] = analytics_df_SVD['pageId'].apply(lambda x:int(x))
 
+		# Saves Matrix for later use
+		analytics_df_SVD.to_csv('state/visit_user_ranking.csv')
+
 		# A reader is still needed but only the rating_scale param is requiered.
 		reader = Reader(rating_scale=(1, 4))
 
 		# The columns must correspond to user id, item id and ratings (in that order).
 		data = Dataset.load_from_df(analytics_df_SVD[['visitId', 'pageId', 'ranking']], reader)
+
+
 
 		trainset, testset = train_test_split(data, test_size=.1)
 
@@ -146,14 +160,26 @@ class SimpleNewsRecommender:
 
 	# This function predicts the best n suggestions to a given user based on the trained 
 	# collaborative filtering recommender
-	def predict_collaborative_filtering(self):
-		pass
+	def recommend_collaborative_filtering(self, uid, n):
+		#list of news
+		news_list = self.news_df['entityId'].tolist()
+		#finds which news were already seen by the viewer
+		viewed_list = self.visit_user_ranking[self.visit_user_ranking['visitId']==int(uid)]['pageId'].tolist()
+		for page in viewed_list:
+			news_list.remove(page)
+		result_list = []
+		for page in news_list:
+			result_list.append(self.algo.predict(int(uid),page))
+		result_df = pd.DataFrame(result_list)
+		#print(result_df.head(5))
+		print(result_df.sort_values(by=['est'], ascending=False).join(self.news_df.set_index('entityId'),on='iid')[['title','est']].head(n))
 
 
-news_rec = SimpleNewsRecommender()
+news_rec = SimpleNewsRecommender(trained_model=True)
 #news_rec.train_content_based()
-#news_rec.recomment_content_based(5,'Jair Bolsonaro',datetime.date(2019,4,18))
-news_rec.train_collaborative_filtering()
+#news_rec.recommend_content_based(5,'Jair Bolsonaro',datetime.date(2019,4,18))
+#news_rec.train_collaborative_filtering()
+news_rec.recommend_collaborative_filtering('1495138189',5)
 
 
 
